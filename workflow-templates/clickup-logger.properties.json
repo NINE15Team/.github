@@ -1,0 +1,6 @@
+{
+    "name": "ClickUp Deployment Logger",
+    "description": "Automatically logs merged PR data (Task IDs, Reviewers, etc.) into a ClickUp Doc table.",
+    "iconName": "octicon-table",
+    "categories": ["Deployment", "Utility"]
+  }
