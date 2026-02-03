@@ -1,0 +1,95 @@
+name: Reusable ClickUp Logger
+
+on:
+  workflow_call:
+    secrets:
+      CLICKUP_WORKSPACE_ID: { required: true }
+      CLICKUP_DOC_ID: { required: true }
+      CLICKUP_PAGE_ID: { required: true }
+      CLICKUP_API_TOKEN: { required: true }
+
+jobs:
+  log-deployment:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract deployment information
+        id: extract_info
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          DEVELOPER="${{ github.event.pull_request.user.login }}"
+          REVIEWER="${{ github.event.pull_request.merged_by.login }}"
+          BRANCH="${{ github.event.pull_request.head.ref }}"
+          MERGED_AT="${{ github.event.pull_request.merged_at }}"
+          FORMATTED_DATE=$(date -d "$MERGED_AT" '+%b %d, %Y')
+          FORMATTED_TIME=$(date -d "$MERGED_AT" '+%I:%M %p')
+          PR_BODY="${{ github.event.pull_request.body }}"
+          CLICKUP_TASKS=$(echo "$PR_BODY" | grep -oE 'WEB-[0-9A-Za-z]+' | tr '\n' ', ' | sed 's/,$//')
+          if [ -z "$CLICKUP_TASKS" ]; then CLICKUP_TASKS="N/A"; fi
+          FILES_CHANGED="${{ github.event.pull_request.changed_files }}"
+          
+          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+          echo "pr_title=$PR_TITLE" >> $GITHUB_OUTPUT
+          echo "developer=$DEVELOPER" >> $GITHUB_OUTPUT
+          echo "reviewer=$REVIEWER" >> $GITHUB_OUTPUT
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+          echo "date=$FORMATTED_DATE" >> $GITHUB_OUTPUT
+          echo "time=$FORMATTED_TIME" >> $GITHUB_OUTPUT
+          echo "clickup_tasks=$CLICKUP_TASKS" >> $GITHUB_OUTPUT
+          echo "files_changed=$FILES_CHANGED" >> $GITHUB_OUTPUT
+
+      - name: Get current ClickUp page content
+        id: get_page
+        run: |
+          RESPONSE=$(curl -s -X GET \
+            "https://api.clickup.com/api/v3/workspaces/${{ secrets.CLICKUP_WORKSPACE_ID }}/docs/${{ secrets.CLICKUP_DOC_ID }}/pages/${{ secrets.CLICKUP_PAGE_ID }}" \
+            -H "Authorization: ${{ secrets.CLICKUP_API_TOKEN }}" \
+            -H "Content-Type: application/json")
+          CURRENT_CONTENT=$(echo "$RESPONSE" | jq -r '.content // ""')
+          echo "$CURRENT_CONTENT" > current_content.txt
+
+      - name: Insert new row into table
+        id: update_content
+        run: |
+          export DATE="${{ steps.extract_info.outputs.date }}"
+          export TIME="${{ steps.extract_info.outputs.time }}"
+          export PR_NUMBER="${{ steps.extract_info.outputs.pr_number }}"
+          export PR_TITLE="${{ steps.extract_info.outputs.pr_title }}"
+          export REVIEWER="${{ steps.extract_info.outputs.reviewer }}"
+          export BRANCH="${{ steps.extract_info.outputs.branch }}"
+          export CLICKUP_TASKS="${{ steps.extract_info.outputs.clickup_tasks }}"
+          export FILES_CHANGED="${{ steps.extract_info.outputs.files_changed }}"
+          
+          python3 << 'PYTHON_SCRIPT' > updated_content.txt
+          import sys, re, os
+          date, time, pr_num = os.environ.get('DATE', ''), os.environ.get('TIME', ''), os.environ.get('PR_NUMBER', '')
+          title, rev, branch = os.environ.get('PR_TITLE', ''), os.environ.get('REVIEWER', ''), os.environ.get('BRANCH', '')
+          tasks, files = os.environ.get('CLICKUP_TASKS', 'N/A'), os.environ.get('FILES_CHANGED', '0')
+          
+          new_row = f"| {date} | {time} | #{pr_num} | {title} | {rev} | {branch} | {tasks} | {files} |"
+          with open('current_content.txt', 'r') as f: content = f.read()
+          lines = content.split('\n')
+          output_lines = []
+          inserted = False
+          for line in lines:
+              output_lines.append(line)
+              if not inserted and re.match(r'^\|\s*---', line):
+                  output_lines.append(new_row)
+                  inserted = True
+          print('\n'.join(output_lines))
+          PYTHON_SCRIPT
+
+      - name: Update ClickUp page
+        run: |
+          UPDATED_CONTENT=$(cat updated_content.txt)
+          ESCAPED_CONTENT=$(echo "$UPDATED_CONTENT" | jq -Rs .)
+          cat > payload.json <<EOF
+          {"content": $ESCAPED_CONTENT, "content_edit_mode": "replace", "content_format": "text/md"}
+          EOF
+          curl -s -X PUT "https://api.clickup.com/api/v3/workspaces/${{ secrets.CLICKUP_WORKSPACE_ID }}/docs/${{ secrets.CLICKUP_DOC_ID }}/pages/${{ secrets.CLICKUP_PAGE_ID }}" \
+            -H "Authorization: ${{ secrets.CLICKUP_API_TOKEN }}" -H "Content-Type: application/json" -d @payload.json

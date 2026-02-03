@@ -1,0 +1,16 @@
+name: Log Deployment to ClickUp
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - main
+
+jobs:
+  log-to-clickup:
+    uses: NINE15Team/.github/.github/workflows/reusable-clickup-logger.yml@main
+    secrets:
+      CLICKUP_WORKSPACE_ID: ${{ secrets.CLICKUP_WORKSPACE_ID }}
+      CLICKUP_DOC_ID: ${{ secrets.CLICKUP_DOC_ID }}
+      CLICKUP_PAGE_ID: ${{ secrets.CLICKUP_PAGE_ID }}
+      CLICKUP_API_TOKEN: ${{ secrets.CLICKUP_API_TOKEN }}
