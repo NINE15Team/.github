@@ -54,11 +54,9 @@ jobs:
           else
             TASK_NAMES=""
             for TASK_ID in $TASK_IDS; do
+              # Strip the WEB- prefix to get the actual ClickUp task ID
               ACTUAL_ID="${TASK_ID#WEB-}"
-              # Extract the actual ClickUp task ID (you may need to adjust this based on your task ID format)
-              # If WEB-XXXXX maps to a ClickUp task ID, you'll need to handle that mapping
-              # For now, assuming the task ID format matches what's in the PR
-              
+
               # Try to fetch task name from ClickUp API
               RESPONSE=$(curl -s -w "\n%{http_code}" -X GET \
                 "https://api.clickup.com/api/v2/task/$ACTUAL_ID" \
@@ -72,6 +70,11 @@ jobs:
                 TASK_NAME=$(echo "$TASK_DATA" | jq -r '.name // "N/A"')
                 if [ "$TASK_NAME" = "null" ] || [ -z "$TASK_NAME" ]; then
                   TASK_NAME="N/A"
+                else
+                  # Sanitize for markdown table / ClickUp:
+                  # 1) remove newlines
+                  # 2) replace '|' (column separator) with '-'
+                  TASK_NAME=$(echo "$TASK_NAME" | tr '\n' ' ' | sed 's/|/-/g')
                 fi
               else
                 TASK_NAME="N/A"
@@ -120,6 +123,8 @@ jobs:
           title, rev, branch = os.environ.get('PR_TITLE', ''), os.environ.get('REVIEWER', ''), os.environ.get('BRANCH', '')
           tasks, task_names, files = os.environ.get('CLICKUP_TASKS', 'N/A'), os.environ.get('CLICKUP_TASK_NAMES', 'N/A'), os.environ.get('FILES_CHANGED', '0')
           
+          # Table columns in ClickUp:
+          # | Date | Time | PR | Description | Reviewer | Branch | ClickUp Tasks | ClickUp Name | Files Changed |
           new_row = f"| {date} | {time} | #{pr_num} | {title} | {rev} | {branch} | {tasks} | {task_names} | {files} |"
           with open('current_content.txt', 'r') as f: content = f.read()
           lines = content.split('\n')
