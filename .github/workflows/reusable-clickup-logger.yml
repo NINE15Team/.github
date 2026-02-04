@@ -54,13 +54,14 @@ jobs:
           else
             TASK_NAMES=""
             for TASK_ID in $TASK_IDS; do
+              ACTUAL_ID="${TASK_ID#WEB-}"
               # Extract the actual ClickUp task ID (you may need to adjust this based on your task ID format)
               # If WEB-XXXXX maps to a ClickUp task ID, you'll need to handle that mapping
               # For now, assuming the task ID format matches what's in the PR
               
               # Try to fetch task name from ClickUp API
               RESPONSE=$(curl -s -w "\n%{http_code}" -X GET \
-                "https://api.clickup.com/api/v2/task/$TASK_ID" \
+                "https://api.clickup.com/api/v2/task/$ACTUAL_ID" \
                 -H "Authorization: ${{ secrets.CLICKUP_API_TOKEN }}" \
                 -H "accept: application/json")
               
