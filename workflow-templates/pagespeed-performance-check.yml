@@ -1,0 +1,20 @@
+name: PageSpeed Performance Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '**.liquid'
+      - '**.js'
+      - '**.css'
+      - '**.scss'
+      - 'assets/**'
+      - 'sections/**'
+      - 'snippets/**'
+      - 'templates/**'
+
+jobs:
+  performance-check:
+    uses: NINE15Team/.github/.github/workflows/reusable-pagespeed-performance-check.yml@main
+    secrets:
+      PAGESPEED_API_KEY: ${{ secrets.PAGESPEED_API_KEY }}

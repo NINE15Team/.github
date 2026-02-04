@@ -1,0 +1,6 @@
+{
+    "name": "PageSpeed Performance Check",
+    "description": "Automatically checks PageSpeed performance metrics for preview vs live URLs on pull requests. Compares mobile and desktop performance scores and Core Web Vitals.",
+    "iconName": "octicon-graph",
+    "categories": ["CI", "Performance", "Testing"]
+  }
