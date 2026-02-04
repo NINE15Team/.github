@@ -43,6 +43,53 @@ jobs:
           echo "clickup_tasks=$CLICKUP_TASKS" >> $GITHUB_OUTPUT
           echo "files_changed=$FILES_CHANGED" >> $GITHUB_OUTPUT
 
+      - name: Fetch ClickUp task names
+        id: fetch_task_names
+        run: |
+          PR_BODY="${{ github.event.pull_request.body }}"
+          TASK_IDS=$(echo "$PR_BODY" | grep -oE 'WEB-[0-9A-Za-z]+' || true)
+          
+          if [ -z "$TASK_IDS" ]; then
+            echo "task_names=N/A" >> $GITHUB_OUTPUT
+          else
+            TASK_NAMES=""
+            for TASK_ID in $TASK_IDS; do
+              # Extract the actual ClickUp task ID (you may need to adjust this based on your task ID format)
+              # If WEB-XXXXX maps to a ClickUp task ID, you'll need to handle that mapping
+              # For now, assuming the task ID format matches what's in the PR
+              
+              # Try to fetch task name from ClickUp API
+              RESPONSE=$(curl -s -w "\n%{http_code}" -X GET \
+                "https://api.clickup.com/api/v2/task/$TASK_ID" \
+                -H "Authorization: ${{ secrets.CLICKUP_API_TOKEN }}" \
+                -H "accept: application/json")
+              
+              HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+              TASK_DATA=$(echo "$RESPONSE" | sed '$d')
+              
+              if [ "$HTTP_CODE" = "200" ]; then
+                TASK_NAME=$(echo "$TASK_DATA" | jq -r '.name // "N/A"')
+                if [ "$TASK_NAME" = "null" ] || [ -z "$TASK_NAME" ]; then
+                  TASK_NAME="N/A"
+                fi
+              else
+                TASK_NAME="N/A"
+              fi
+              
+              if [ -z "$TASK_NAMES" ]; then
+                TASK_NAMES="$TASK_NAME"
+              else
+                TASK_NAMES="$TASK_NAMES, $TASK_NAME"
+              fi
+            done
+            
+            if [ -z "$TASK_NAMES" ]; then
+              TASK_NAMES="N/A"
+            fi
+            
+            echo "task_names=$TASK_NAMES" >> $GITHUB_OUTPUT
+          fi
+
       - name: Get current ClickUp page content
         id: get_page
         run: |
@@ -63,15 +110,16 @@ jobs:
           export REVIEWER="${{ steps.extract_info.outputs.reviewer }}"
           export BRANCH="${{ steps.extract_info.outputs.branch }}"
           export CLICKUP_TASKS="${{ steps.extract_info.outputs.clickup_tasks }}"
+          export CLICKUP_TASK_NAMES="${{ steps.fetch_task_names.outputs.task_names }}"
           export FILES_CHANGED="${{ steps.extract_info.outputs.files_changed }}"
           
           python3 << 'PYTHON_SCRIPT' > updated_content.txt
           import sys, re, os
           date, time, pr_num = os.environ.get('DATE', ''), os.environ.get('TIME', ''), os.environ.get('PR_NUMBER', '')
           title, rev, branch = os.environ.get('PR_TITLE', ''), os.environ.get('REVIEWER', ''), os.environ.get('BRANCH', '')
-          tasks, files = os.environ.get('CLICKUP_TASKS', 'N/A'), os.environ.get('FILES_CHANGED', '0')
+          tasks, task_names, files = os.environ.get('CLICKUP_TASKS', 'N/A'), os.environ.get('CLICKUP_TASK_NAMES', 'N/A'), os.environ.get('FILES_CHANGED', '0')
           
-          new_row = f"| {date} | {time} | #{pr_num} | {title} | {rev} | {branch} | {tasks} | {files} |"
+          new_row = f"| {date} | {time} | #{pr_num} | {title} | {rev} | {branch} | {tasks} | {task_names} | {files} |"
           with open('current_content.txt', 'r') as f: content = f.read()
           lines = content.split('\n')
           output_lines = []
