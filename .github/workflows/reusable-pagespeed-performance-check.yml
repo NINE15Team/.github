@@ -1,0 +1,421 @@
+name: Reusable PageSpeed Performance Check
+
+on:
+  workflow_call:
+    secrets:
+      PAGESPEED_API_KEY: { required: true }
+
+jobs:
+  performance-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      pull-requests: write
+      checks: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Debug repository info
+        run: |
+          echo "Repository URL: ${{ github.repository }}"
+          echo "Repository owner: ${{ github.repository_owner }}"
+          echo "Repository name: ${{ github.event.repository.name }}"
+          echo "Pull request head: ${{ github.event.pull_request.head.repo.full_name }}"
+
+      - name: Extract URLs from PR Description
+        id: extract-urls
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prBody = context.payload.pull_request.body || '';
+
+            // Multiple patterns to catch different formats
+            const previewPatterns = [
+              /(?:preview|staging|test|dev)[\s:*-]*\s*(https:\/\/[^\s\)\],]+)/i,
+              /\*\*preview\*\*[\s:*-]*\s*(https:\/\/[^\s\)\],]+)/i,
+              /<!--\s*preview:\s*(https:\/\/[^\s\)]+)\s*-->/i
+            ];
+            const livePatterns = [
+              /(?:live|production|prod|main)[\s:*-]*\s*(https:\/\/[^\s\)\],]+)/i,
+              /\*\*live\*\*[\s:*-]*\s*(https:\/\/[^\s\)\],]+)/i,
+              /<!--\s*live:\s*(https:\/\/[^\s\)]+)\s*-->/i
+            ];
+
+            let previewUrl = null;
+            let liveUrl = null;
+
+            // Try each pattern
+            for (const pattern of previewPatterns) {
+              const match = prBody.match(pattern);
+              if (match) {
+                previewUrl = match[1].replace(/[,\.\)]+$/, ''); // Clean trailing punctuation
+                break;
+              }
+            }
+
+            for (const pattern of livePatterns) {
+              const match = prBody.match(pattern);
+              if (match) {
+                liveUrl = match[1].replace(/[,\.\)]+$/, '');
+                break;
+              }
+            }
+
+            if (!previewUrl || !liveUrl) {
+              const errorMsg = `
+              ❌ Could not extract URLs from PR description.
+
+              **Found:**
+              - Preview URL: ${previewUrl || '❌ Not found'}
+              - Live URL: ${liveUrl || '❌ Not found'}
+
+              **Please format your PR description like this:**
+              \`\`\`
+              Preview: https://your-preview-url.myshopify.com
+              Live: https://your-live-store.com
+              \`\`\`
+
+              Or use the PR template for automatic formatting.
+              `;
+
+              core.setFailed(errorMsg);
+
+              // Post helpful comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: errorMsg
+              });
+              
+              return;
+            }
+            
+            core.setOutput('preview_url', previewUrl);
+            core.setOutput('live_url', liveUrl);
+            
+            console.log(`✅ Preview URL: ${previewUrl}`);
+            console.log(`✅ Live URL: ${liveUrl}`);
+
+      - name: Run PageSpeed Insights
+        id: pagespeed
+        env:
+          PREVIEW_URL: ${{ steps.extract-urls.outputs.preview_url }}
+          LIVE_URL: ${{ steps.extract-urls.outputs.live_url }}
+          PSI_API_KEY: ${{ secrets.PAGESPEED_API_KEY }}
+        run: |
+          node << 'EOF'
+          const https = require('https');
+          const fs = require('fs');
+
+          const API_KEY = process.env.PSI_API_KEY || '';
+          const PREVIEW_URL = process.env.PREVIEW_URL;
+          const LIVE_URL = process.env.LIVE_URL;
+
+          function runPageSpeed(url, strategy = 'mobile') {
+            return new Promise((resolve, reject) => {
+              const apiUrl = `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(url)}&strategy=${strategy}&category=performance${API_KEY ? '&key=' + API_KEY : ''}`;
+
+              const request = https.get(apiUrl, (res) => {
+                let data = '';
+                res.on('data', chunk => data += chunk);
+                res.on('end', () => {
+                  if (res.statusCode === 200) {
+                    try {
+                      resolve(JSON.parse(data));
+                    } catch (parseError) {
+                      reject(new Error(`Failed to parse JSON: ${parseError.message}`));
+                    }
+                  } else {
+                    reject(new Error(`API returned ${res.statusCode}: ${data}`));
+                  }
+                });
+              }).on('error', reject);
+
+              // Add timeout (60 seconds)
+              request.setTimeout(60000, () => {
+                request.destroy();
+                reject(new Error('Request timeout after 60 seconds'));
+              });
+            });
+          }
+
+          async function runPageSpeedWithRetry(url, strategy, maxRetries = 3) {
+            for (let i = 0; i < maxRetries; i++) {
+              try {
+                console.log(`Attempt ${i + 1}/${maxRetries} for ${strategy} - ${url}`);
+                return await runPageSpeed(url, strategy);
+              } catch (error) {
+                console.error(`Error on attempt ${i + 1}: ${error.message}`);
+                if (i === maxRetries - 1) {
+                  throw error;
+                }
+                // Exponential backoff
+                const delay = 5000 * (i + 1);
+                console.log(`Retrying in ${delay / 1000} seconds...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+              }
+            }
+          }
+
+          async function analyzePerformance() {
+            try {
+              console.log('Analyzing Live URL - Mobile...');
+              const liveMobileData = await runPageSpeedWithRetry(LIVE_URL, 'mobile');
+              
+              // Delay between requests to avoid rate limiting
+              await new Promise(resolve => setTimeout(resolve, 2000));
+
+              console.log('Analyzing Live URL - Desktop...');
+              const liveDesktopData = await runPageSpeedWithRetry(LIVE_URL, 'desktop');
+              
+              await new Promise(resolve => setTimeout(resolve, 2000));
+
+              console.log('Analyzing Preview URL - Mobile...');
+              const previewMobileData = await runPageSpeedWithRetry(PREVIEW_URL, 'mobile');
+              
+              await new Promise(resolve => setTimeout(resolve, 2000));
+
+              console.log('Analyzing Preview URL - Desktop...');
+              const previewDesktopData = await runPageSpeedWithRetry(PREVIEW_URL, 'desktop');
+
+              // Extract metrics for both mobile and desktop with null checks
+              const liveMobileMetrics = liveMobileData.lighthouseResult?.audits || {};
+              const liveDesktopMetrics = liveDesktopData.lighthouseResult?.audits || {};
+              const previewMobileMetrics = previewMobileData.lighthouseResult?.audits || {};
+              const previewDesktopMetrics = previewDesktopData.lighthouseResult?.audits || {};
+
+              const liveMobileScore = (liveMobileData.lighthouseResult?.categories?.performance?.score || 0) * 100;
+              const liveDesktopScore = (liveDesktopData.lighthouseResult?.categories?.performance?.score || 0) * 100;
+              const previewMobileScore = (previewMobileData.lighthouseResult?.categories?.performance?.score || 0) * 100;
+              const previewDesktopScore = (previewDesktopData.lighthouseResult?.categories?.performance?.score || 0) * 100;
+
+              const results = {
+                mobile: {
+                  live: {
+                    score: liveMobileScore,
+                    fcp: (liveMobileMetrics['first-contentful-paint']?.numericValue || 0) / 1000,
+                    lcp: (liveMobileMetrics['largest-contentful-paint']?.numericValue || 0) / 1000,
+                    tbt: liveMobileMetrics['total-blocking-time']?.numericValue || 0,
+                    cls: liveMobileMetrics['cumulative-layout-shift']?.numericValue || 0,
+                    si: (liveMobileMetrics['speed-index']?.numericValue || 0) / 1000
+                  },
+                  preview: {
+                    score: previewMobileScore,
+                    fcp: (previewMobileMetrics['first-contentful-paint']?.numericValue || 0) / 1000,
+                    lcp: (previewMobileMetrics['largest-contentful-paint']?.numericValue || 0) / 1000,
+                    tbt: previewMobileMetrics['total-blocking-time']?.numericValue || 0,
+                    cls: previewMobileMetrics['cumulative-layout-shift']?.numericValue || 0,
+                    si: (previewMobileMetrics['speed-index']?.numericValue || 0) / 1000
+                  }
+                },
+                desktop: {
+                  live: {
+                    score: liveDesktopScore,
+                    fcp: (liveDesktopMetrics['first-contentful-paint']?.numericValue || 0) / 1000,
+                    lcp: (liveDesktopMetrics['largest-contentful-paint']?.numericValue || 0) / 1000,
+                    tbt: liveDesktopMetrics['total-blocking-time']?.numericValue || 0,
+                    cls: liveDesktopMetrics['cumulative-layout-shift']?.numericValue || 0,
+                    si: (liveDesktopMetrics['speed-index']?.numericValue || 0) / 1000
+                  },
+                  preview: {
+                    score: previewDesktopScore,
+                    fcp: (previewDesktopMetrics['first-contentful-paint']?.numericValue || 0) / 1000,
+                    lcp: (previewDesktopMetrics['largest-contentful-paint']?.numericValue || 0) / 1000,
+                    tbt: previewDesktopMetrics['total-blocking-time']?.numericValue || 0,
+                    cls: previewDesktopMetrics['cumulative-layout-shift']?.numericValue || 0,
+                    si: (previewDesktopMetrics['speed-index']?.numericValue || 0) / 1000
+                  }
+                }
+              };
+
+              // Calculate deltas for both mobile and desktop
+              results.mobile.delta = {
+                score: previewMobileScore - liveMobileScore,
+                fcp: results.mobile.preview.fcp - results.mobile.live.fcp,
+                lcp: results.mobile.preview.lcp - results.mobile.live.lcp,
+                tbt: results.mobile.preview.tbt - results.mobile.live.tbt,
+                cls: results.mobile.preview.cls - results.mobile.live.cls,
+                si: results.mobile.preview.si - results.mobile.live.si
+              };
+
+              results.desktop.delta = {
+                score: previewDesktopScore - liveDesktopScore,
+                fcp: results.desktop.preview.fcp - results.desktop.live.fcp,
+                lcp: results.desktop.preview.lcp - results.desktop.live.lcp,
+                tbt: results.desktop.preview.tbt - results.desktop.live.tbt,
+                cls: results.desktop.preview.cls - results.desktop.live.cls,
+                si: results.desktop.preview.si - results.desktop.live.si
+              };
+
+              // Determine status for both mobile and desktop
+              let mobileStatus = 'pass';
+              let desktopStatus = 'pass';
+              let mobileFailureReasons = [];
+              let desktopFailureReasons = [];
+
+              // Check mobile performance
+              if (results.mobile.delta.score < -20) {
+                mobileStatus = 'fail';
+                mobileFailureReasons.push(`Mobile performance score dropped by ${Math.abs(results.mobile.delta.score).toFixed(1)} points`);
+              }
+              if (results.mobile.delta.lcp > 2) {
+                mobileStatus = 'fail';
+                mobileFailureReasons.push(`Mobile LCP increased by ${results.mobile.delta.lcp.toFixed(2)}s`);
+              }
+              if (results.mobile.delta.cls > 0.1) {
+                mobileStatus = mobileStatus === 'fail' ? 'fail' : 'warning';
+                mobileFailureReasons.push(`Mobile CLS increased by ${results.mobile.delta.cls.toFixed(3)}`);
+              }
+              if (results.mobile.delta.fcp > 1) {
+                mobileStatus = mobileStatus === 'fail' ? 'fail' : 'warning';
+                mobileFailureReasons.push(`Mobile FCP increased by ${results.mobile.delta.fcp.toFixed(2)}s`);
+              }
+
+              // Check desktop performance
+              if (results.desktop.delta.score < -20) {
+                desktopStatus = 'fail';
+                desktopFailureReasons.push(`Desktop performance score dropped by ${Math.abs(results.desktop.delta.score).toFixed(1)} points`);
+              }
+              if (results.desktop.delta.lcp > 2) {
+                desktopStatus = 'fail';
+                desktopFailureReasons.push(`Desktop LCP increased by ${results.desktop.delta.lcp.toFixed(2)}s`);
+              }
+              if (results.desktop.delta.cls > 0.1) {
+                desktopStatus = desktopStatus === 'fail' ? 'fail' : 'warning';
+                desktopFailureReasons.push(`Desktop CLS increased by ${results.desktop.delta.cls.toFixed(3)}`);
+              }
+              if (results.desktop.delta.fcp > 1) {
+                desktopStatus = desktopStatus === 'fail' ? 'fail' : 'warning';
+                desktopFailureReasons.push(`Desktop FCP increased by ${results.desktop.delta.fcp.toFixed(2)}s`);
+              }
+
+              // Overall status (fail if either mobile or desktop fails)
+              const overallStatus = (mobileStatus === 'fail' || desktopStatus === 'fail') ? 'fail' : 
+                                  (mobileStatus === 'warning' || desktopStatus === 'warning') ? 'warning' : 'pass';
+
+              results.mobile.status = mobileStatus;
+              results.mobile.failureReasons = mobileFailureReasons;
+              results.desktop.status = desktopStatus;
+              results.desktop.failureReasons = desktopFailureReasons;
+              results.status = overallStatus;
+
+              fs.writeFileSync('results.json', JSON.stringify(results, null, 2));
+
+              console.log('✅ Analysis complete!');
+              console.log('RESULTS:', JSON.stringify(results, null, 2));
+            } catch (error) {
+              console.error('Fatal error during analysis:', error);
+              throw error;
+            }
+          }
+
+          analyzePerformance().catch(err => {
+            console.error('Error:', err.message);
+            process.exit(1);
+          });
+          EOF
+
+      - name: Post Results Comment
+        uses: actions/github-script@v7
+        env:
+          LIVE_URL: ${{ steps.extract-urls.outputs.live_url }}
+          PREVIEW_URL: ${{ steps.extract-urls.outputs.preview_url }}
+        with:
+          script: |
+            const fs = require('fs');
+            const results = JSON.parse(fs.readFileSync('results.json', 'utf8'));
+
+            const statusEmoji = {
+              pass: '✅',
+              warning: '⚠️',
+              fail: '❌'
+            };
+
+            const formatDelta = (value, unit = '', inverse = false) => {
+              const isPositive = inverse ? value < 0 : value > 0;
+              const emoji = isPositive ? '📈' : '📉';
+              const sign = value > 0 ? '+' : '';
+              return `${emoji} ${sign}${value.toFixed(2)}${unit}`;
+            };
+
+            const comment = `## ${statusEmoji[results.status]} PageSpeed Performance Report
+
+            ### 📱 Mobile Performance
+            | Environment | Score | Change |
+            |-------------|-------|--------|
+            | **Live** | ${results.mobile.live.score.toFixed(1)} | - |
+            | **Preview** | ${results.mobile.preview.score.toFixed(1)} | ${formatDelta(results.mobile.delta.score, '', true)} |
+
+            #### Mobile Core Web Vitals
+            | Metric | Live | Preview | Change |
+            |--------|------|---------|--------|
+            | **LCP** (Largest Contentful Paint) | ${results.mobile.live.lcp.toFixed(2)}s | ${results.mobile.preview.lcp.toFixed(2)}s | ${formatDelta(results.mobile.delta.lcp, 's')} |
+            | **FCP** (First Contentful Paint) | ${results.mobile.live.fcp.toFixed(2)}s | ${results.mobile.preview.fcp.toFixed(2)}s | ${formatDelta(results.mobile.delta.fcp, 's')} |
+            | **CLS** (Cumulative Layout Shift) | ${results.mobile.live.cls.toFixed(3)} | ${results.mobile.preview.cls.toFixed(3)} | ${formatDelta(results.mobile.delta.cls)} |
+            | **TBT** (Total Blocking Time) | ${results.mobile.live.tbt.toFixed(0)}ms | ${results.mobile.preview.tbt.toFixed(0)}ms | ${formatDelta(results.mobile.delta.tbt, 'ms')} |
+            | **SI** (Speed Index) | ${results.mobile.live.si.toFixed(2)}s | ${results.mobile.preview.si.toFixed(2)}s | ${formatDelta(results.mobile.delta.si, 's')} |
+
+            ### 🖥️ Desktop Performance
+            | Environment | Score | Change |
+            |-------------|-------|--------|
+            | **Live** | ${results.desktop.live.score.toFixed(1)} | - |
+            | **Preview** | ${results.desktop.preview.score.toFixed(1)} | ${formatDelta(results.desktop.delta.score, '', true)} |
+
+            #### Desktop Core Web Vitals
+            | Metric | Live | Preview | Change |
+            |--------|------|---------|--------|
+            | **LCP** (Largest Contentful Paint) | ${results.desktop.live.lcp.toFixed(2)}s | ${results.desktop.preview.lcp.toFixed(2)}s | ${formatDelta(results.desktop.delta.lcp, 's')} |
+            | **FCP** (First Contentful Paint) | ${results.desktop.live.fcp.toFixed(2)}s | ${results.desktop.preview.fcp.toFixed(2)}s | ${formatDelta(results.desktop.delta.fcp, 's')} |
+            | **CLS** (Cumulative Layout Shift) | ${results.desktop.live.cls.toFixed(3)} | ${results.desktop.preview.cls.toFixed(3)} | ${formatDelta(results.desktop.delta.cls)} |
+            | **TBT** (Total Blocking Time) | ${results.desktop.live.tbt.toFixed(0)}ms | ${results.desktop.preview.tbt.toFixed(0)}ms | ${formatDelta(results.desktop.delta.tbt, 'ms')} |
+            | **SI** (Speed Index) | ${results.desktop.live.si.toFixed(2)}s | ${results.desktop.preview.si.toFixed(2)}s | ${formatDelta(results.desktop.delta.si, 's')} |
+
+            ${results.mobile.failureReasons.length > 0 || results.desktop.failureReasons.length > 0 ? `### ⚠️ Issues Detected\n${[...results.mobile.failureReasons, ...results.desktop.failureReasons].map(r => `- ${r}`).join('\n')}` : ''}
+
+            ---
+
+            ${results.status === 'pass' ? '✅ **Performance check passed!** No significant regressions detected on either mobile or desktop.' : ''}
+            ${results.status === 'warning' ? '⚠️ **Warning:** Minor performance regression detected. Please review the issues above.' : ''}
+            ${results.status === 'fail' ? '❌ **Performance check failed!** Significant regression detected. Please optimize before merging.' : ''}
+
+            <details>
+            <summary>📊 View detailed analysis</summary>
+
+            - **Live URL:** ${process.env.LIVE_URL}
+            - **Preview URL:** ${process.env.PREVIEW_URL}
+            - **Test Date:** ${new Date().toISOString()}
+            - **Strategies:** Mobile & Desktop
+
+            </details>
+            `;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: comment
+            });
+
+      - name: Set Check Status
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const results = JSON.parse(fs.readFileSync('results.json', 'utf8'));
+
+            if (results.status === 'fail') {
+              core.setFailed('❌ Performance regression detected! Check the PR comment for details.');
+            } else if (results.status === 'warning') {
+              console.log('⚠️ Minor performance concerns detected. Review recommended.');
+            } else {
+              console.log('✅ Performance check passed!');
+            }
