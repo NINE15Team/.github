@@ -168,92 +168,98 @@ jobs:
 
           async function analyzePerformance() {
             try {
-              console.log('Analyzing Live URL - Mobile...');
-              const liveMobileData = await runPageSpeedWithRetry(LIVE_URL, 'mobile');
+              const NUM_RUNS = 3;
               
-              // Delay between requests to avoid rate limiting
-              await new Promise(resolve => setTimeout(resolve, 2000));
+              // Helper function to run multiple times and calculate average
+              async function runMultipleTimesAndAverage(url, strategy, label) {
+                console.log(`\n📊 Running ${NUM_RUNS} tests for ${label} (${strategy})...`);
+                const runs = [];
+                
+                for (let i = 0; i < NUM_RUNS; i++) {
+                  console.log(`  Run ${i + 1}/${NUM_RUNS}...`);
+                  const data = await runPageSpeedWithRetry(url, strategy);
+                  runs.push(data);
+                  
+                  // Delay between runs (except after last run)
+                  if (i < NUM_RUNS - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 3000));
+                  }
+                }
+                
+                // Calculate averages
+                const avgScore = runs.reduce((sum, r) => sum + (r.lighthouseResult?.categories?.performance?.score || 0), 0) / NUM_RUNS * 100;
+                const avgFcp = runs.reduce((sum, r) => {
+                  const value = r.lighthouseResult?.audits?.['first-contentful-paint']?.numericValue || 0;
+                  return sum + value;
+                }, 0) / NUM_RUNS / 1000;
+                const avgLcp = runs.reduce((sum, r) => {
+                  const value = r.lighthouseResult?.audits?.['largest-contentful-paint']?.numericValue || 0;
+                  return sum + value;
+                }, 0) / NUM_RUNS / 1000;
+                const avgTbt = runs.reduce((sum, r) => {
+                  const value = r.lighthouseResult?.audits?.['total-blocking-time']?.numericValue || 0;
+                  return sum + value;
+                }, 0) / NUM_RUNS;
+                const avgCls = runs.reduce((sum, r) => {
+                  const value = r.lighthouseResult?.audits?.['cumulative-layout-shift']?.numericValue || 0;
+                  return sum + value;
+                }, 0) / NUM_RUNS;
+                const avgSi = runs.reduce((sum, r) => {
+                  const value = r.lighthouseResult?.audits?.['speed-index']?.numericValue || 0;
+                  return sum + value;
+                }, 0) / NUM_RUNS / 1000;
+                
+                console.log(`  ✅ Average Score: ${avgScore.toFixed(1)}`);
+                
+                return {
+                  score: avgScore,
+                  fcp: avgFcp,
+                  lcp: avgLcp,
+                  tbt: avgTbt,
+                  cls: avgCls,
+                  si: avgSi,
+                  runs: NUM_RUNS
+                };
+              }
 
-              console.log('Analyzing Live URL - Desktop...');
-              const liveDesktopData = await runPageSpeedWithRetry(LIVE_URL, 'desktop');
-              
-              await new Promise(resolve => setTimeout(resolve, 2000));
+              console.log('🚀 Starting performance analysis with 3 runs per test...\n');
 
-              console.log('Analyzing Preview URL - Mobile...');
-              const previewMobileData = await runPageSpeedWithRetry(PREVIEW_URL, 'mobile');
-              
-              await new Promise(resolve => setTimeout(resolve, 2000));
-
-              console.log('Analyzing Preview URL - Desktop...');
-              const previewDesktopData = await runPageSpeedWithRetry(PREVIEW_URL, 'desktop');
-
-              // Extract metrics for both mobile and desktop with null checks
-              const liveMobileMetrics = liveMobileData.lighthouseResult?.audits || {};
-              const liveDesktopMetrics = liveDesktopData.lighthouseResult?.audits || {};
-              const previewMobileMetrics = previewMobileData.lighthouseResult?.audits || {};
-              const previewDesktopMetrics = previewDesktopData.lighthouseResult?.audits || {};
-
-              const liveMobileScore = (liveMobileData.lighthouseResult?.categories?.performance?.score || 0) * 100;
-              const liveDesktopScore = (liveDesktopData.lighthouseResult?.categories?.performance?.score || 0) * 100;
-              const previewMobileScore = (previewMobileData.lighthouseResult?.categories?.performance?.score || 0) * 100;
-              const previewDesktopScore = (previewDesktopData.lighthouseResult?.categories?.performance?.score || 0) * 100;
+              // Run all tests with 3 runs each
+              const [liveMobileAvg, liveDesktopAvg, previewMobileAvg, previewDesktopAvg] = await Promise.all([
+                runMultipleTimesAndAverage(LIVE_URL, 'mobile', 'Live URL'),
+                runMultipleTimesAndAverage(LIVE_URL, 'desktop', 'Live URL'),
+                runMultipleTimesAndAverage(PREVIEW_URL, 'mobile', 'Preview URL'),
+                runMultipleTimesAndAverage(PREVIEW_URL, 'desktop', 'Preview URL')
+              ]);
 
               const results = {
                 mobile: {
-                  live: {
-                    score: liveMobileScore,
-                    fcp: (liveMobileMetrics['first-contentful-paint']?.numericValue || 0) / 1000,
-                    lcp: (liveMobileMetrics['largest-contentful-paint']?.numericValue || 0) / 1000,
-                    tbt: liveMobileMetrics['total-blocking-time']?.numericValue || 0,
-                    cls: liveMobileMetrics['cumulative-layout-shift']?.numericValue || 0,
-                    si: (liveMobileMetrics['speed-index']?.numericValue || 0) / 1000
-                  },
-                  preview: {
-                    score: previewMobileScore,
-                    fcp: (previewMobileMetrics['first-contentful-paint']?.numericValue || 0) / 1000,
-                    lcp: (previewMobileMetrics['largest-contentful-paint']?.numericValue || 0) / 1000,
-                    tbt: previewMobileMetrics['total-blocking-time']?.numericValue || 0,
-                    cls: previewMobileMetrics['cumulative-layout-shift']?.numericValue || 0,
-                    si: (previewMobileMetrics['speed-index']?.numericValue || 0) / 1000
-                  }
+                  live: liveMobileAvg,
+                  preview: previewMobileAvg
                 },
                 desktop: {
-                  live: {
-                    score: liveDesktopScore,
-                    fcp: (liveDesktopMetrics['first-contentful-paint']?.numericValue || 0) / 1000,
-                    lcp: (liveDesktopMetrics['largest-contentful-paint']?.numericValue || 0) / 1000,
-                    tbt: liveDesktopMetrics['total-blocking-time']?.numericValue || 0,
-                    cls: liveDesktopMetrics['cumulative-layout-shift']?.numericValue || 0,
-                    si: (liveDesktopMetrics['speed-index']?.numericValue || 0) / 1000
-                  },
-                  preview: {
-                    score: previewDesktopScore,
-                    fcp: (previewDesktopMetrics['first-contentful-paint']?.numericValue || 0) / 1000,
-                    lcp: (previewDesktopMetrics['largest-contentful-paint']?.numericValue || 0) / 1000,
-                    tbt: previewDesktopMetrics['total-blocking-time']?.numericValue || 0,
-                    cls: previewDesktopMetrics['cumulative-layout-shift']?.numericValue || 0,
-                    si: (previewDesktopMetrics['speed-index']?.numericValue || 0) / 1000
-                  }
+                  live: liveDesktopAvg,
+                  preview: previewDesktopAvg
                 }
               };
 
               // Calculate deltas for both mobile and desktop
               results.mobile.delta = {
-                score: previewMobileScore - liveMobileScore,
-                fcp: results.mobile.preview.fcp - results.mobile.live.fcp,
-                lcp: results.mobile.preview.lcp - results.mobile.live.lcp,
-                tbt: results.mobile.preview.tbt - results.mobile.live.tbt,
-                cls: results.mobile.preview.cls - results.mobile.live.cls,
-                si: results.mobile.preview.si - results.mobile.live.si
+                score: previewMobileAvg.score - liveMobileAvg.score,
+                fcp: previewMobileAvg.fcp - liveMobileAvg.fcp,
+                lcp: previewMobileAvg.lcp - liveMobileAvg.lcp,
+                tbt: previewMobileAvg.tbt - liveMobileAvg.tbt,
+                cls: previewMobileAvg.cls - liveMobileAvg.cls,
+                si: previewMobileAvg.si - liveMobileAvg.si
               };
 
               results.desktop.delta = {
-                score: previewDesktopScore - liveDesktopScore,
-                fcp: results.desktop.preview.fcp - results.desktop.live.fcp,
-                lcp: results.desktop.preview.lcp - results.desktop.live.lcp,
-                tbt: results.desktop.preview.tbt - results.desktop.live.tbt,
-                cls: results.desktop.preview.cls - results.desktop.live.cls,
-                si: results.desktop.preview.si - results.desktop.live.si
+                score: previewDesktopAvg.score - liveDesktopAvg.score,
+                fcp: previewDesktopAvg.fcp - liveDesktopAvg.fcp,
+                lcp: previewDesktopAvg.lcp - liveDesktopAvg.lcp,
+                tbt: previewDesktopAvg.tbt - liveDesktopAvg.tbt,
+                cls: previewDesktopAvg.cls - liveDesktopAvg.cls,
+                si: previewDesktopAvg.si - liveDesktopAvg.si
               };
 
               // Determine status for both mobile and desktop
@@ -310,7 +316,7 @@ jobs:
 
               fs.writeFileSync('results.json', JSON.stringify(results, null, 2));
 
-              console.log('✅ Analysis complete!');
+              console.log('\n✅ Analysis complete! (Averages from 3 runs per test)');
               console.log('RESULTS:', JSON.stringify(results, null, 2));
             } catch (error) {
               console.error('Fatal error during analysis:', error);
@@ -348,6 +354,8 @@ jobs:
             };
 
             const comment = `## ${statusEmoji[results.status]} PageSpeed Performance Report
+
+            > 📊 **Note:** All metrics are averages from 3 runs per test for improved accuracy.
 
             ### 📱 Mobile Performance
             | Environment | Score | Change |
@@ -394,6 +402,7 @@ jobs:
             - **Preview URL:** ${process.env.PREVIEW_URL}
             - **Test Date:** ${new Date().toISOString()}
             - **Strategies:** Mobile & Desktop
+            - **Runs per test:** 3 (averaged)
 
             </details>
             `;
