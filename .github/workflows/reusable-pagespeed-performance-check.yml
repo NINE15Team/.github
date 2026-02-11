@@ -177,40 +177,56 @@ jobs:
                 
                 for (let i = 0; i < NUM_RUNS; i++) {
                   console.log(`  Run ${i + 1}/${NUM_RUNS}...`);
-                  const data = await runPageSpeedWithRetry(url, strategy);
-                  runs.push(data);
-                  
+                  try {
+                    const data = await runPageSpeedWithRetry(url, strategy);
+                    runs.push(data);
+                  } catch (error) {
+                    console.error(`  ❌ Run ${i + 1} failed: ${error.message}`);
+                    // If no successful runs at all, bail out for this config
+                    if (runs.length === 0) {
+                      throw new Error(`All runs failed for ${label} (${strategy}): ${error.message}`);
+                    }
+                    // Otherwise just skip this run and continue (we'll average what we have)
+                  }
+
                   // Delay between runs (except after last run)
                   if (i < NUM_RUNS - 1) {
                     await new Promise(resolve => setTimeout(resolve, 3000));
                   }
                 }
-                
-                // Calculate averages
-                const avgScore = runs.reduce((sum, r) => sum + (r.lighthouseResult?.categories?.performance?.score || 0), 0) / NUM_RUNS * 100;
-                const avgFcp = runs.reduce((sum, r) => {
-                  const value = r.lighthouseResult?.audits?.['first-contentful-paint']?.numericValue || 0;
-                  return sum + value;
-                }, 0) / NUM_RUNS / 1000;
-                const avgLcp = runs.reduce((sum, r) => {
-                  const value = r.lighthouseResult?.audits?.['largest-contentful-paint']?.numericValue || 0;
-                  return sum + value;
-                }, 0) / NUM_RUNS / 1000;
-                const avgTbt = runs.reduce((sum, r) => {
-                  const value = r.lighthouseResult?.audits?.['total-blocking-time']?.numericValue || 0;
-                  return sum + value;
-                }, 0) / NUM_RUNS;
-                const avgCls = runs.reduce((sum, r) => {
-                  const value = r.lighthouseResult?.audits?.['cumulative-layout-shift']?.numericValue || 0;
-                  return sum + value;
-                }, 0) / NUM_RUNS;
-                const avgSi = runs.reduce((sum, r) => {
-                  const value = r.lighthouseResult?.audits?.['speed-index']?.numericValue || 0;
-                  return sum + value;
-                }, 0) / NUM_RUNS / 1000;
-                
-                console.log(`  ✅ Average Score: ${avgScore.toFixed(1)}`);
-                
+
+                const effectiveRuns = runs.length;
+                console.log(`  ✅ Completed ${effectiveRuns} successful run(s) for ${label} (${strategy})`);
+
+                const avg = (getter, scale = 1) =>
+                  runs.reduce((sum, r) => sum + (getter(r) || 0), 0) / effectiveRuns / scale;
+
+                const avgScore = runs.reduce(
+                  (sum, r) => sum + (r.lighthouseResult?.categories?.performance?.score || 0),
+                  0
+                ) / effectiveRuns * 100;
+
+                const avgFcp = avg(
+                  r => r.lighthouseResult?.audits?.['first-contentful-paint']?.numericValue,
+                  1000
+                );
+                const avgLcp = avg(
+                  r => r.lighthouseResult?.audits?.['largest-contentful-paint']?.numericValue,
+                  1000
+                );
+                const avgTbt = avg(
+                  r => r.lighthouseResult?.audits?.['total-blocking-time']?.numericValue
+                );
+                const avgCls = avg(
+                  r => r.lighthouseResult?.audits?.['cumulative-layout-shift']?.numericValue
+                );
+                const avgSi = avg(
+                  r => r.lighthouseResult?.audits?.['speed-index']?.numericValue,
+                  1000
+                );
+
+                console.log(`  ✅ Average Score: ${avgScore.toFixed(1)} (from ${effectiveRuns} run(s))`);
+
                 return {
                   score: avgScore,
                   fcp: avgFcp,
@@ -218,19 +234,23 @@ jobs:
                   tbt: avgTbt,
                   cls: avgCls,
                   si: avgSi,
-                  runs: NUM_RUNS
+                  runs: effectiveRuns
                 };
               }
 
-              console.log('🚀 Starting performance analysis with 3 runs per test...\n');
+              console.log('🚀 Starting performance analysis with up to 3 runs per test (sequential)...\n');
 
-              // Run all tests with 3 runs each
-              const [liveMobileAvg, liveDesktopAvg, previewMobileAvg, previewDesktopAvg] = await Promise.all([
-                runMultipleTimesAndAverage(LIVE_URL, 'mobile', 'Live URL'),
-                runMultipleTimesAndAverage(LIVE_URL, 'desktop', 'Live URL'),
-                runMultipleTimesAndAverage(PREVIEW_URL, 'mobile', 'Preview URL'),
-                runMultipleTimesAndAverage(PREVIEW_URL, 'desktop', 'Preview URL')
-              ]);
+              // Run configs SEQUENTIALLY to reduce API pressure / timeouts
+              const liveMobileAvg    = await runMultipleTimesAndAverage(LIVE_URL,    'mobile',  'Live URL');
+              await new Promise(r => setTimeout(r, 2000));
+
+              const liveDesktopAvg   = await runMultipleTimesAndAverage(LIVE_URL,    'desktop', 'Live URL');
+              await new Promise(r => setTimeout(r, 2000));
+
+              const previewMobileAvg = await runMultipleTimesAndAverage(PREVIEW_URL, 'mobile',  'Preview URL');
+              await new Promise(r => setTimeout(r, 2000));
+
+              const previewDesktopAvg = await runMultipleTimesAndAverage(PREVIEW_URL, 'desktop', 'Preview URL');
 
               const results = {
                 mobile: {
@@ -246,20 +266,20 @@ jobs:
               // Calculate deltas for both mobile and desktop
               results.mobile.delta = {
                 score: previewMobileAvg.score - liveMobileAvg.score,
-                fcp: previewMobileAvg.fcp - liveMobileAvg.fcp,
-                lcp: previewMobileAvg.lcp - liveMobileAvg.lcp,
-                tbt: previewMobileAvg.tbt - liveMobileAvg.tbt,
-                cls: previewMobileAvg.cls - liveMobileAvg.cls,
-                si: previewMobileAvg.si - liveMobileAvg.si
+                fcp:   previewMobileAvg.fcp   - liveMobileAvg.fcp,
+                lcp:   previewMobileAvg.lcp   - liveMobileAvg.lcp,
+                tbt:   previewMobileAvg.tbt   - liveMobileAvg.tbt,
+                cls:   previewMobileAvg.cls   - liveMobileAvg.cls,
+                si:    previewMobileAvg.si    - liveMobileAvg.si
               };
 
               results.desktop.delta = {
                 score: previewDesktopAvg.score - liveDesktopAvg.score,
-                fcp: previewDesktopAvg.fcp - liveDesktopAvg.fcp,
-                lcp: previewDesktopAvg.lcp - liveDesktopAvg.lcp,
-                tbt: previewDesktopAvg.tbt - liveDesktopAvg.tbt,
-                cls: previewDesktopAvg.cls - liveDesktopAvg.cls,
-                si: previewDesktopAvg.si - liveDesktopAvg.si
+                fcp:   previewDesktopAvg.fcp   - liveDesktopAvg.fcp,
+                lcp:   previewDesktopAvg.lcp   - liveDesktopAvg.lcp,
+                tbt:   previewDesktopAvg.tbt   - liveDesktopAvg.tbt,
+                cls:   previewDesktopAvg.cls   - liveDesktopAvg.cls,
+                si:    previewDesktopAvg.si    - liveDesktopAvg.si
               };
 
               // Determine status for both mobile and desktop
@@ -305,8 +325,12 @@ jobs:
               }
 
               // Overall status (fail if either mobile or desktop fails)
-              const overallStatus = (mobileStatus === 'fail' || desktopStatus === 'fail') ? 'fail' : 
-                                  (mobileStatus === 'warning' || desktopStatus === 'warning') ? 'warning' : 'pass';
+              const overallStatus =
+                mobileStatus === 'fail' || desktopStatus === 'fail'
+                  ? 'fail'
+                  : mobileStatus === 'warning' || desktopStatus === 'warning'
+                    ? 'warning'
+                    : 'pass';
 
               results.mobile.status = mobileStatus;
               results.mobile.failureReasons = mobileFailureReasons;
@@ -316,7 +340,7 @@ jobs:
 
               fs.writeFileSync('results.json', JSON.stringify(results, null, 2));
 
-              console.log('\n✅ Analysis complete! (Averages from 3 runs per test)');
+              console.log('\n✅ Analysis complete! (Averages from up to 3 runs per test)');
               console.log('RESULTS:', JSON.stringify(results, null, 2));
             } catch (error) {
               console.error('Fatal error during analysis:', error);
@@ -355,7 +379,7 @@ jobs:
 
             const comment = `## ${statusEmoji[results.status]} PageSpeed Performance Report
 
-            > 📊 **Note:** All metrics are averages from 3 runs per test for improved accuracy.
+            > 📊 **Note:** All metrics are averages from up to 3 runs per test for improved accuracy.
 
             ### 📱 Mobile Performance
             | Environment | Score | Change |
@@ -402,7 +426,7 @@ jobs:
             - **Preview URL:** ${process.env.PREVIEW_URL}
             - **Test Date:** ${new Date().toISOString()}
             - **Strategies:** Mobile & Desktop
-            - **Runs per test:** 3 (averaged)
+            - **Runs per test:** up to 3 (averaged)
 
             </details>
             `;
