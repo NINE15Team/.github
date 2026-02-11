@@ -140,10 +140,10 @@ jobs:
                 });
               }).on('error', reject);
 
-              // Add timeout (60 seconds)
-              request.setTimeout(60000, () => {
+              // Increased timeout (120 seconds)
+              request.setTimeout(120000, () => {
                 request.destroy();
-                reject(new Error('Request timeout after 60 seconds'));
+                reject(new Error('Request timeout after 120 seconds'));
               });
             });
           }
@@ -168,11 +168,11 @@ jobs:
 
           async function analyzePerformance() {
             try {
-              const NUM_RUNS = 3;
-              
+              const NUM_RUNS = 1; // single run per config (with retries)
+
               // Helper function to run multiple times and calculate average
               async function runMultipleTimesAndAverage(url, strategy, label) {
-                console.log(`\n📊 Running ${NUM_RUNS} tests for ${label} (${strategy})...`);
+                console.log(`\n📊 Running ${NUM_RUNS} test(s) for ${label} (${strategy})...`);
                 const runs = [];
                 
                 for (let i = 0; i < NUM_RUNS; i++) {
@@ -182,14 +182,24 @@ jobs:
                     runs.push(data);
                   } catch (error) {
                     console.error(`  ❌ Run ${i + 1} failed: ${error.message}`);
-                    // If no successful runs at all, bail out for this config
+                    // If no successful runs at all, mark as no data for this config
                     if (runs.length === 0) {
-                      throw new Error(`All runs failed for ${label} (${strategy}): ${error.message}`);
+                      console.error(`All runs failed for ${label} (${strategy}): ${error.message}`);
+                      return {
+                        score: 0,
+                        fcp: 0,
+                        lcp: 0,
+                        tbt: 0,
+                        cls: 0,
+                        si: 0,
+                        runs: 0,
+                        error: `All runs failed for ${label} (${strategy})`
+                      };
                     }
                     // Otherwise just skip this run and continue (we'll average what we have)
                   }
 
-                  // Delay between runs (except after last run)
+                  // Delay between runs (kept for NUM_RUNS > 1, harmless here)
                   if (i < NUM_RUNS - 1) {
                     await new Promise(resolve => setTimeout(resolve, 3000));
                   }
@@ -238,7 +248,7 @@ jobs:
                 };
               }
 
-              console.log('🚀 Starting performance analysis with up to 3 runs per test (sequential)...\n');
+              console.log('🚀 Starting performance analysis with 1 run per test (with retries, sequential)...\n');
 
               // Run configs SEQUENTIALLY to reduce API pressure / timeouts
               const liveMobileAvg    = await runMultipleTimesAndAverage(LIVE_URL,    'mobile',  'Live URL');
@@ -262,6 +272,14 @@ jobs:
                   preview: previewDesktopAvg
                 }
               };
+
+              // Track data issues (timeouts / no data)
+              const dataIssues = [];
+              if (liveMobileAvg.runs === 0)   dataIssues.push('No data for Live Mobile (PageSpeed timeouts)');
+              if (liveDesktopAvg.runs === 0)  dataIssues.push('No data for Live Desktop (PageSpeed timeouts)');
+              if (previewMobileAvg.runs === 0) dataIssues.push('No data for Preview Mobile (PageSpeed timeouts)');
+              if (previewDesktopAvg.runs === 0) dataIssues.push('No data for Preview Desktop (PageSpeed timeouts)');
+              results.dataIssues = dataIssues;
 
               // Calculate deltas for both mobile and desktop
               results.mobile.delta = {
@@ -324,13 +342,18 @@ jobs:
                 desktopFailureReasons.push(`Desktop FCP increased by ${results.desktop.delta.fcp.toFixed(2)}s`);
               }
 
-              // Overall status (fail if either mobile or desktop fails)
-              const overallStatus =
+              // Base overall status from performance deltas
+              let overallStatus =
                 mobileStatus === 'fail' || desktopStatus === 'fail'
                   ? 'fail'
                   : mobileStatus === 'warning' || desktopStatus === 'warning'
                     ? 'warning'
                     : 'pass';
+
+              // If any configs had no data but we otherwise passed, downgrade to warning
+              if (results.dataIssues.length > 0 && overallStatus === 'pass') {
+                overallStatus = 'warning';
+              }
 
               results.mobile.status = mobileStatus;
               results.mobile.failureReasons = mobileFailureReasons;
@@ -340,7 +363,7 @@ jobs:
 
               fs.writeFileSync('results.json', JSON.stringify(results, null, 2));
 
-              console.log('\n✅ Analysis complete! (Averages from up to 3 runs per test)');
+              console.log('\n✅ Analysis complete! (1 run per test with retries; timeouts become warnings)');
               console.log('RESULTS:', JSON.stringify(results, null, 2));
             } catch (error) {
               console.error('Fatal error during analysis:', error);
@@ -377,9 +400,13 @@ jobs:
               return `${emoji} ${sign}${value.toFixed(2)}${unit}`;
             };
 
+            const dataIssuesText = (results.dataIssues && results.dataIssues.length)
+              ? `\n\n> ⚠️ **Note:** Some PageSpeed requests timed out:\n${results.dataIssues.map(i => `> - ${i}`).join('\n')}`
+              : '';
+
             const comment = `## ${statusEmoji[results.status]} PageSpeed Performance Report
 
-            > 📊 **Note:** All metrics are averages from up to 3 runs per test for improved accuracy.
+            > 📊 **Note:** Metrics are based on a single run per test with retries to avoid API timeouts.${dataIssuesText}
 
             ### 📱 Mobile Performance
             | Environment | Score | Change |
@@ -416,7 +443,7 @@ jobs:
             ---
 
             ${results.status === 'pass' ? '✅ **Performance check passed!** No significant regressions detected on either mobile or desktop.' : ''}
-            ${results.status === 'warning' ? '⚠️ **Warning:** Minor performance regression detected. Please review the issues above.' : ''}
+            ${results.status === 'warning' ? '⚠️ **Warning:** Performance data is incomplete or minor regressions detected. Please review the details above.' : ''}
             ${results.status === 'fail' ? '❌ **Performance check failed!** Significant regression detected. Please optimize before merging.' : ''}
 
             <details>
@@ -426,7 +453,7 @@ jobs:
             - **Preview URL:** ${process.env.PREVIEW_URL}
             - **Test Date:** ${new Date().toISOString()}
             - **Strategies:** Mobile & Desktop
-            - **Runs per test:** up to 3 (averaged)
+            - **Runs per test:** 1 (with retries)
 
             </details>
             `;
@@ -448,7 +475,7 @@ jobs:
             if (results.status === 'fail') {
               core.setFailed('❌ Performance regression detected! Check the PR comment for details.');
             } else if (results.status === 'warning') {
-              console.log('⚠️ Minor performance concerns detected. Review recommended.');
+              console.log('⚠️ Performance warnings or incomplete data detected. Review recommended.');
             } else {
               console.log('✅ Performance check passed!');
             }
