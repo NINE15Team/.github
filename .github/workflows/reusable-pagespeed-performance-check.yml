@@ -143,7 +143,7 @@ jobs:
               // Increased timeout (180 seconds)
               request.setTimeout(180000, () => {
                 request.destroy();
-                reject(new Error('Request timeout after 120 seconds'));
+                reject(new Error('Request timeout after 180 seconds'));
               });
             });
           }
@@ -168,7 +168,7 @@ jobs:
 
           async function analyzePerformance() {
             try {
-              const NUM_RUNS = 3; // single run per config (with retries)
+              const NUM_RUNS = 3;
 
               // Helper function to run multiple times and calculate average
               async function runMultipleTimesAndAverage(url, strategy, label) {
@@ -199,7 +199,6 @@ jobs:
                     // Otherwise just skip this run and continue (we'll average what we have)
                   }
 
-                  // Delay between runs (kept for NUM_RUNS > 1, harmless here)
                   if (i < NUM_RUNS - 1) {
                     await new Promise(resolve => setTimeout(resolve, 3000));
                   }
@@ -248,19 +247,15 @@ jobs:
                 };
               }
 
-              console.log('🚀 Starting performance analysis with 1 run per test (with retries, sequential)...\n');
+              console.log('🚀 Starting performance analysis with 3 runs per test (parallel execution)...\n');
 
-              // Run configs SEQUENTIALLY to reduce API pressure / timeouts
-              const liveMobileAvg    = await runMultipleTimesAndAverage(LIVE_URL,    'MOBILE',  'Live URL');
-              await new Promise(r => setTimeout(r, 2000));
-
-              const liveDesktopAvg   = await runMultipleTimesAndAverage(LIVE_URL,    'DESKTOP', 'Live URL');
-              await new Promise(r => setTimeout(r, 2000));
-
-              const previewMobileAvg = await runMultipleTimesAndAverage(PREVIEW_URL, 'MOBILE',  'Preview URL');
-              await new Promise(r => setTimeout(r, 2000));
-
-              const previewDesktopAvg = await runMultipleTimesAndAverage(PREVIEW_URL, 'DESKTOP', 'Preview URL');
+              // Run all 4 configs in PARALLEL to speed up execution
+              const [liveMobileAvg, liveDesktopAvg, previewMobileAvg, previewDesktopAvg] = await Promise.all([
+                runMultipleTimesAndAverage(LIVE_URL,    'MOBILE',  'Live URL'),
+                runMultipleTimesAndAverage(LIVE_URL,    'DESKTOP', 'Live URL'),
+                runMultipleTimesAndAverage(PREVIEW_URL, 'MOBILE',  'Preview URL'),
+                runMultipleTimesAndAverage(PREVIEW_URL, 'DESKTOP', 'Preview URL')
+              ]);
 
               const results = {
                 mobile: {
@@ -363,7 +358,7 @@ jobs:
 
               fs.writeFileSync('results.json', JSON.stringify(results, null, 2));
 
-              console.log('\n✅ Analysis complete! (1 run per test with retries; timeouts become warnings)');
+              console.log('\n✅ Analysis complete! (3 runs per test, averaged; parallel execution)');
               console.log('RESULTS:', JSON.stringify(results, null, 2));
             } catch (error) {
               console.error('Fatal error during analysis:', error);
@@ -406,7 +401,7 @@ jobs:
 
             const comment = `## ${statusEmoji[results.status]} PageSpeed Performance Report
 
-            > 📊 **Note:** Metrics are based on a single run per test with retries to avoid API timeouts.${dataIssuesText}
+            > 📊 **Note:** Metrics are averages from 3 runs per test for improved accuracy.${dataIssuesText}
 
             ### 📱 Mobile Performance
             | Environment | Score | Change |
@@ -453,7 +448,7 @@ jobs:
             - **Preview URL:** ${process.env.PREVIEW_URL}
             - **Test Date:** ${new Date().toISOString()}
             - **Strategies:** Mobile & Desktop
-            - **Runs per test:** 1 (with retries)
+            - **Runs per test:** 3 (averaged, parallel execution)
 
             </details>
             `;
