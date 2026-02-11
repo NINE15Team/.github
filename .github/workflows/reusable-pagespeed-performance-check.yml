@@ -8,7 +8,7 @@ on:
 jobs:
   performance-check:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     permissions:
       pull-requests: write
       checks: write
