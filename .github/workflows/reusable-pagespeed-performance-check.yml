@@ -168,7 +168,7 @@ jobs:
 
           async function analyzePerformance() {
             try {
-              const NUM_RUNS = 1; // single run per config (with retries)
+              const NUM_RUNS = 3; // single run per config (with retries)
 
               // Helper function to run multiple times and calculate average
               async function runMultipleTimesAndAverage(url, strategy, label) {
@@ -251,16 +251,16 @@ jobs:
               console.log('🚀 Starting performance analysis with 1 run per test (with retries, sequential)...\n');
 
               // Run configs SEQUENTIALLY to reduce API pressure / timeouts
-              const liveMobileAvg    = await runMultipleTimesAndAverage(LIVE_URL,    'mobile',  'Live URL');
+              const liveMobileAvg    = await runMultipleTimesAndAverage(LIVE_URL,    'MOBILE',  'Live URL');
               await new Promise(r => setTimeout(r, 2000));
 
-              const liveDesktopAvg   = await runMultipleTimesAndAverage(LIVE_URL,    'desktop', 'Live URL');
+              const liveDesktopAvg   = await runMultipleTimesAndAverage(LIVE_URL,    'DESKTOP', 'Live URL');
               await new Promise(r => setTimeout(r, 2000));
 
-              const previewMobileAvg = await runMultipleTimesAndAverage(PREVIEW_URL, 'mobile',  'Preview URL');
+              const previewMobileAvg = await runMultipleTimesAndAverage(PREVIEW_URL, 'MOBILE',  'Preview URL');
               await new Promise(r => setTimeout(r, 2000));
 
-              const previewDesktopAvg = await runMultipleTimesAndAverage(PREVIEW_URL, 'desktop', 'Preview URL');
+              const previewDesktopAvg = await runMultipleTimesAndAverage(PREVIEW_URL, 'DESKTOP', 'Preview URL');
 
               const results = {
                 mobile: {
